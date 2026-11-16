@@ -10,7 +10,6 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
 import android.widget.*
-import android.widget.LinearLayout
 import java.security.MessageDigest
 
 object Pw {
@@ -38,7 +37,7 @@ class MainActivity : Activity() {
         val p = (20 * dp).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(p, p * 3, p, p)
+            setPadding(p, p * 2, p, p)
         }
         fun label(t: String) = TextView(this).apply {
             text = t; textSize = 16f; setPadding(0, p / 2, 0, p / 2)
@@ -54,25 +53,32 @@ class MainActivity : Activity() {
                 Uri.parse("package:$packageName")))
         })
 
-        root.addView(label("2. 비밀번호: " + if (Pw.isSet(this)) "설정됨 ✅" else "미설정 ❌"))
+        val acc = ClickService.instance != null
+        root.addView(label("2. 자동 클릭(접근성): " + if (acc) "켜짐 ✅" else "꺼짐 ❌"))
+        if (!acc) {
+            root.addView(label("※ 안 켜지면: 설정 → 앱 → MacroLock → 오른쪽 위 ⋮ → '제한된 설정 허용' 후 다시 시도"))
+            root.addView(btn("접근성 설정 열기") {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            })
+        }
+
+        root.addView(label("3. PIN(숫자 4자리 이상): " + if (Pw.isSet(this)) "설정됨 ✅" else "미설정 ❌"))
         val input = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            hint = "새 비밀번호 (4자 이상)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            hint = "새 PIN (숫자만)"
         }
         root.addView(input)
-        root.addView(btn("비밀번호 저장") {
+        root.addView(btn("PIN 저장") {
             val s = input.text.toString()
-            if (s.length < 4) toast("4자 이상 입력하세요")
+            if (s.length < 4 || !s.all { it.isDigit() }) toast("숫자 4자리 이상 입력하세요")
             else { Pw.save(this, s); toast("저장됨"); build() }
         })
 
-        root.addView(label("3. 게임 실행 → 매크로 시작 후 잠금\n(누르면 홈으로 나가고 10초 뒤 화면이 잠깁니다)\n해제: 화면 오른쪽 아래 구석을 2초 안에 5번 탭"))
-        root.addView(btn("10초 뒤 잠금 시작") {
-            if (!Settings.canDrawOverlays(this)) toast("권한을 먼저 허용하세요")
-            else if (!Pw.isSet(this)) toast("비밀번호를 먼저 저장하세요")
+        root.addView(label("4. 화면에 패널 띄우기\n패널에서 클릭 위치 지정, 간격 설정, 클릭 시작, 잠금을 모두 할 수 있습니다."))
+        root.addView(btn("패널 열기") {
+            if (!Settings.canDrawOverlays(this)) toast("오버레이 권한을 먼저 허용하세요")
             else {
                 startForegroundService(Intent(this, LockService::class.java))
-                toast("10초 뒤 잠깁니다. 게임을 실행하세요")
                 moveTaskToBack(true)
             }
         })
