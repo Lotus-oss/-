@@ -14,10 +14,15 @@ class ClickService : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
     override fun onInterrupt() {}
 
-    fun click(x: Float, y: Float) {
+    fun click(x: Float, y: Float, done: (() -> Unit)? = null) {
         val p = Path().apply { moveTo(x, y) }
         val g = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, 50)).build()
-        dispatchGesture(g, null, null)
+            .addStroke(GestureDescription.StrokeDescription(p, 0, 40)).build()
+        val cb = object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(d: GestureDescription?) { done?.invoke() }
+            override fun onCancelled(d: GestureDescription?) { done?.invoke() }
+        }
+        val ok = dispatchGesture(g, cb, null)
+        if (!ok) done?.invoke()
     }
 }
