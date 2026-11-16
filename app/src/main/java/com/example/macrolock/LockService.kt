@@ -1,4 +1,3 @@
-
 package com.example.macrolock
 
 import android.app.*
@@ -10,13 +9,22 @@ import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.view.*
 import android.widget.*
+import kotlin.math.abs
 
 class LockService : Service() {
     private lateinit var wm: WindowManager
+    private var lockWm: WindowManager? = null
+    private var lockLp: WindowManager.LayoutParams? = null
     private val h = Handler(Looper.getMainLooper())
-    private var panel: View? = null
+
+    private var root: FrameLayout? = null
+    private var rootShown = false
     private var marker: View? = null
     private var lockView: View? = null
+    private lateinit var icon: TextView
+    private lateinit var panel: LinearLayout
+    private lateinit var rootLp: WindowManager.LayoutParams
+
     private var clicking = false
     private var picking = false
     private var cx = 0f
@@ -28,10 +36,11 @@ class LockService : Service() {
     private lateinit var intervalTv: TextView
     private lateinit var clickBtn: Button
     private lateinit var posBtn: Button
+
     private val NF = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
     private val NL = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+    private val NT = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
     private val WRAP = WindowManager.LayoutParams.WRAP_CONTENT
-    private lateinit var panelLp: WindowManager.LayoutParams
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -44,9 +53,26 @@ class LockService : Service() {
     private val clickLoop = object : Runnable {
         override fun run() {
             if (!clicking) return
-            ClickService.instance?.click(cx, cy)
+            doClick()
             h.postDelayed(this, interval)
         }
+    }
+
+    private fun setPassThrough(on: Boolean) {
+        val lv = lockView ?: return
+        val lp = lockLp ?: return
+        lp.flags = if (on) lp.flags or NT else lp.flags and NT.inv()
+        try { lockWm?.updateViewLayout(lv, lp) } catch (_: Exception) {}
+    }
+
+    private fun doClick() {
+        val svc = ClickService.instance ?: return
+        if (lockView == null) { svc.click(cx, cy); return }
+        setPassThrough(true)
+        h.postDelayed({
+            svc.click(cx, cy) { h.post { setPassThrough(false) } }
+            h.postDelayed({ setPassThrough(false) }, 400)
+        }, 40)
     }
 
     override fun onBind(i: Intent?): IBinder? = null
@@ -56,36 +82,42 @@ class LockService : Service() {
         getSystemService(NotificationManager::class.java)
             .createNotificationChannel(NotificationChannel(ch, "잠금", NotificationManager.IMPORTANCE_LOW))
         startForeground(1, Notification.Builder(this, ch)
-            .setContentTitle("MacroLock 작동 중")
+            .setContentTitle("클릭 락 작동 중")
             .setSmallIcon(android.R.drawable.ic_lock_lock).build())
-        if (panel != null || lockView != null) return START_NOT_STICKY
+        if (root != null) return START_NOT_STICKY
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         cx = prefs().getFloat("cx", 0f)
         cy = prefs().getFloat("cy", 0f)
         interval = prefs().getLong("iv", 1000L)
-        panelLp = wlp(WRAP, WRAP, NF or NL).apply {
+        rootLp = wlp(WRAP, WRAP, NF or NL).apply {
             gravity = Gravity.TOP or Gravity.START
             x = dp(8); y = dp(100)
         }
-        showPanel()
+        buildRoot()
+        wm.addView(root, rootLp)
+        rootShown = true
         return START_NOT_STICKY
     }
 
     private fun btn(label: String, a: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; textSize = 14f
+        text = label; isAllCaps = false; textSize = 13f
         setOnClickListener { a() }
     }
 
-    private fun drag(handle: View, target: View, lp: WindowManager.LayoutParams) {
-        var sx = 0; var sy = 0; var tx = 0f; var ty = 0f
-        handle.setOnTouchListener { _, e ->
+    private fun drag(v: View, target: View, lp: WindowManager.LayoutParams, onTap: (() -> Unit)? = null) {
+        var sx = 0; var sy = 0; var tx = 0f; var ty = 0f; var moved = false
+        v.setOnTouchListener { _, e ->
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> { sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY }
+                MotionEvent.ACTION_DOWN -> { sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY; moved = false }
                 MotionEvent.ACTION_MOVE -> {
-                    lp.x = sx + (e.rawX - tx).toInt()
-                    lp.y = sy + (e.rawY - ty).toInt()
-                    try { wm.updateViewLayout(target, lp) } catch (_: Exception) {}
+                    val dx = e.rawX - tx; val dy = e.rawY - ty
+                    if (!moved && (abs(dx) > dp(8) || abs(dy) > dp(8))) moved = true
+                    if (moved) {
+                        lp.x = sx + dx.toInt(); lp.y = sy + dy.toInt()
+                        try { wm.updateViewLayout(target, lp) } catch (_: Exception) {}
+                    }
                 }
+                MotionEvent.ACTION_UP -> if (!moved) onTap?.invoke()
             }
             true
         }
@@ -98,25 +130,44 @@ class LockService : Service() {
     }
 
     private fun setInterval(v: Long) {
-        interval = v.coerceIn(100L, 10000L)
+        interval = v.coerceIn(200L, 10000L)
         prefs().edit().putLong("iv", interval).apply()
         refreshStatus()
     }
 
     private fun step() = if (interval < 2000) 100L else 500L
 
-    private fun showPanel() {
-        val box = LinearLayout(this).apply {
+    private fun setExpanded(open: Boolean) {
+        icon.visibility = if (open) View.GONE else View.VISIBLE
+        panel.visibility = if (open) View.VISIBLE else View.GONE
+        try { wm.updateViewLayout(root, rootLp) } catch (_: Exception) {}
+    }
+
+    private fun buildRoot() {
+        val fr = FrameLayout(this)
+
+        icon = TextView(this).apply {
+            text = "🎯"; textSize = 22f; gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xEE1E2330.toInt()); setStroke(dp(2), 0xFF22C55E.toInt())
+            }
+        }
+        fr.addView(icon, FrameLayout.LayoutParams(dp(52), dp(52)))
+        drag(icon, fr, rootLp) { setExpanded(true) }
+
+        panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(12))
+            setPadding(dp(10), dp(8), dp(10), dp(10))
             background = GradientDrawable().apply {
                 setColor(0xEE1E2330.toInt()); cornerRadius = dp(18).toFloat()
             }
+            visibility = View.GONE
         }
         val title = TextView(this).apply {
-            text = "☰ 매크로 락 (여기를 끌어 이동)"
-            setTextColor(Color.WHITE); textSize = 14f
-            setPadding(0, 0, 0, dp(8))
+            text = "☰ 끌어서 이동"
+            setTextColor(Color.WHITE); textSize = 13f
+            setPadding(0, 0, 0, dp(6))
         }
         statusTv = TextView(this).apply { setTextColor(0xFFAAB0C0.toInt()); textSize = 12f }
         intervalTv = TextView(this).apply {
@@ -129,21 +180,21 @@ class LockService : Service() {
         row.addView(intervalTv, LinearLayout.LayoutParams(0, WRAP, 1f))
         row.addView(btn("+") { setInterval(interval + step()) })
 
-        clickBtn = btn(if (clicking) "■ 클릭 정지" else "▶ 클릭 시작") { toggleClick() }
-        posBtn = btn(if (picking) "✔ 위치 확정" else "⌖ 클릭 위치 지정") { togglePick() }
+        clickBtn = btn("▶ 클릭 시작") { toggleClick() }
+        posBtn = btn("⌖ 클릭 위치 지정") { togglePick() }
 
-        box.addView(title)
-        box.addView(statusTv)
-        box.addView(row)
-        box.addView(clickBtn)
-        box.addView(posBtn)
-        box.addView(btn("🔒 화면 잠금") { lock() })
-        box.addView(btn("✕ 종료") { stopSelf() })
+        panel.addView(title)
+        panel.addView(statusTv)
+        panel.addView(row)
+        panel.addView(clickBtn)
+        panel.addView(posBtn)
+        panel.addView(btn("🔒 화면 잠금") { lock() })
+        panel.addView(btn("▼ 접기") { setExpanded(false) })
+        panel.addView(btn("✕ 종료") { stopSelf() })
         refreshStatus()
-
-        drag(title, box, panelLp)
-        wm.addView(box, panelLp)
-        panel = box
+        fr.addView(panel, FrameLayout.LayoutParams(dp(190), WRAP))
+        drag(title, fr, rootLp)
+        root = fr
     }
 
     private fun toggleClick() {
@@ -207,8 +258,7 @@ class LockService : Service() {
     private fun lock() {
         if (!Pw.isSet(this)) { toast("앱 첫 화면에서 PIN을 먼저 저장하세요"); return }
         if (picking) togglePick()
-        panel?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        panel = null
+        if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {}; rootShown = false }
         showLock()
     }
 
@@ -269,9 +319,14 @@ class LockService : Service() {
         fr.addView(hint, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.END)
             .apply { setMargins(0, 0, dp(48), dp(48)) })
 
-        val lp = wlp(
+        val svc = ClickService.instance
+        val mgr = if (svc != null) svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager else wm
+        val type = if (svc != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
+            type,
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or NL or NF,
             PixelFormat.OPAQUE
@@ -279,22 +334,30 @@ class LockService : Service() {
         if (Build.VERSION.SDK_INT >= 28)
             lp.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-        wm.addView(fr, lp)
+        mgr.addView(fr, lp)
+        lockWm = mgr
+        lockLp = lp
         lockView = fr
     }
 
     private fun unlock() {
-        lockView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        lockView?.let { try { lockWm?.removeView(it) } catch (_: Exception) {} }
         lockView = null
-        showPanel()
+        lockLp = null
+        if (!rootShown && root != null) {
+            wm.addView(root, rootLp)
+            rootShown = true
+            setExpanded(false)
+        }
     }
 
     override fun onDestroy() {
         clicking = false
         h.removeCallbacksAndMessages(null)
-        for (v in listOf(panel, marker, lockView))
-            v?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        panel = null; marker = null; lockView = null
+        marker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        lockView?.let { try { lockWm?.removeView(it) } catch (_: Exception) {} }
+        if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {} }
+        marker = null; lockView = null; rootShown = false
         super.onDestroy()
     }
 }
