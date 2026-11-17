@@ -14,13 +14,16 @@ import kotlin.math.abs
 class LockService : Service() {
     private lateinit var wm: WindowManager
     private var lockWm: WindowManager? = null
-    private var lockLp: WindowManager.LayoutParams? = null
     private val h = Handler(Looper.getMainLooper())
 
     private var root: FrameLayout? = null
     private var rootShown = false
     private var marker: View? = null
-    private var lockView: View? = null
+    private val lockViews = mutableListOf<View>()
+    private var lockBg: View? = null
+    private var lockBgLp: WindowManager.LayoutParams? = null
+    private var lockPass = false
+    private var padView: View? = null
     private lateinit var icon: TextView
     private lateinit var panel: LinearLayout
     private lateinit var rootLp: WindowManager.LayoutParams
@@ -41,6 +44,7 @@ class LockService : Service() {
     private val NL = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
     private val NT = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
     private val WRAP = WindowManager.LayoutParams.WRAP_CONTENT
+    private val MATCH = WindowManager.LayoutParams.MATCH_PARENT
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
@@ -59,15 +63,15 @@ class LockService : Service() {
     }
 
     private fun setPassThrough(on: Boolean) {
-        val lv = lockView ?: return
-        val lp = lockLp ?: return
+        val v = lockBg ?: return
+        val lp = lockBgLp ?: return
         lp.flags = if (on) lp.flags or NT else lp.flags and NT.inv()
-        try { lockWm?.updateViewLayout(lv, lp) } catch (_: Exception) {}
+        try { lockWm?.updateViewLayout(v, lp) } catch (_: Exception) {}
     }
 
     private fun doClick() {
         val svc = ClickService.instance ?: return
-        if (lockView == null) { svc.click(cx, cy); return }
+        if (lockBg == null || lockPass) { svc.click(cx, cy); return }
         setPassThrough(true)
         h.postDelayed({
             svc.click(cx, cy) { h.post { setPassThrough(false) } }
@@ -188,7 +192,8 @@ class LockService : Service() {
         panel.addView(row)
         panel.addView(clickBtn)
         panel.addView(posBtn)
-        panel.addView(btn("🔒 화면 잠금") { lock() })
+        panel.addView(btn("🌙 암전 잠금\n(다른 클릭앱 통과)") { lock(true) })
+        panel.addView(btn("🔒 완전 잠금\n(모든 터치 차단)") { lock(false) })
         panel.addView(btn("▼ 접기") { setExpanded(false) })
         panel.addView(btn("✕ 종료") { stopSelf() })
         refreshStatus()
@@ -255,22 +260,64 @@ class LockService : Service() {
         marker = m
     }
 
-    private fun lock() {
+    private fun lock(pass: Boolean) {
         if (!Pw.isSet(this)) { toast("앱 첫 화면에서 PIN을 먼저 저장하세요"); return }
         if (picking) togglePick()
         if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {}; rootShown = false }
-        showLock()
+        showLock(pass)
     }
 
-    private fun showLock() {
-        val fr = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        fr.setOnTouchListener { _, _ -> true }
+    private fun showLock(pass: Boolean) {
+        val svc = ClickService.instance
+        val mgr = if (svc != null) svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager else wm
+        val type = if (svc != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+        else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        lockWm = mgr
+        lockPass = pass
 
+        val base = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or NL or NF
+        val dim = pass && svc == null
+
+        val bg = View(this).apply { setBackgroundColor(Color.BLACK) }
+        if (!pass) bg.setOnTouchListener { _, _ -> true }
+        val bgLp = WindowManager.LayoutParams(
+            MATCH, MATCH, type,
+            if (pass) base or NT else base,
+            if (dim) PixelFormat.TRANSLUCENT else PixelFormat.OPAQUE
+        )
+        if (dim) bgLp.alpha = 0.79f
+        if (Build.VERSION.SDK_INT >= 28)
+            bgLp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        mgr.addView(bg, bgLp)
+        lockViews.add(bg)
+        lockBg = bg
+        lockBgLp = bgLp
+
+        val hint = TextView(this).apply {
+            text = "🔒 3번 탭"; textSize = 20f
+            setTextColor(Color.WHITE); alpha = 0.35f
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            setOnClickListener {
+                val now = SystemClock.uptimeMillis()
+                taps = if (now - lastTap < 2000) taps + 1 else 1
+                lastTap = now
+                if (taps >= 3) { taps = 0; showPad(mgr, type) }
+            }
+        }
+        val hLp = WindowManager.LayoutParams(WRAP, WRAP, type, NF or NL, PixelFormat.TRANSLUCENT)
+            .apply { gravity = Gravity.BOTTOM or Gravity.END; x = dp(48); y = dp(48) }
+        mgr.addView(hint, hLp)
+        lockViews.add(hint)
+    }
+
+    private fun showPad(mgr: WindowManager, type: Int) {
+        if (padView != null) return
         val pad = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(20), dp(20), dp(20))
             setBackgroundColor(0xFF222222.toInt())
-            visibility = View.GONE
         }
         val pin = StringBuilder()
         val disp = TextView(this).apply {
@@ -301,49 +348,27 @@ class LockService : Service() {
         }
         pad.addView(Button(this).apply {
             text = "취소"
-            setOnClickListener { pin.clear(); refresh(); pad.visibility = View.GONE }
-        })
-        fr.addView(pad, FrameLayout.LayoutParams(dp(320), WRAP, Gravity.CENTER))
-
-        val hint = TextView(this).apply {
-            text = "🔒 3번 탭"; textSize = 20f
-            setTextColor(Color.WHITE); alpha = 0.35f
-            setPadding(dp(16), dp(16), dp(16), dp(16))
             setOnClickListener {
-                val now = SystemClock.uptimeMillis()
-                taps = if (now - lastTap < 2000) taps + 1 else 1
-                lastTap = now
-                if (taps >= 3) { taps = 0; pad.visibility = View.VISIBLE }
+                try { lockWm?.removeView(pad) } catch (_: Exception) {}
+                lockViews.remove(pad)
+                padView = null
             }
-        }
-        fr.addView(hint, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.BOTTOM or Gravity.END)
-            .apply { setMargins(0, 0, dp(48), dp(48)) })
+        })
+        val lp = WindowManager.LayoutParams(dp(320), WRAP, type, NF or NL, PixelFormat.TRANSLUCENT)
+            .apply { gravity = Gravity.CENTER }
+        mgr.addView(pad, lp)
+        padView = pad
+        lockViews.add(pad)
+    }
 
-        val svc = ClickService.instance
-        val mgr = if (svc != null) svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager else wm
-        val type = if (svc != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
-        else WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            type,
-            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or NL or NF,
-            PixelFormat.OPAQUE
-        )
-        if (Build.VERSION.SDK_INT >= 28)
-            lp.layoutInDisplayCutoutMode =
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-        mgr.addView(fr, lp)
-        lockWm = mgr
-        lockLp = lp
-        lockView = fr
+    private fun removeLockViews() {
+        for (v in lockViews) try { lockWm?.removeView(v) } catch (_: Exception) {}
+        lockViews.clear()
+        lockBg = null; lockBgLp = null; padView = null
     }
 
     private fun unlock() {
-        lockView?.let { try { lockWm?.removeView(it) } catch (_: Exception) {} }
-        lockView = null
-        lockLp = null
+        removeLockViews()
         if (!rootShown && root != null) {
             wm.addView(root, rootLp)
             rootShown = true
@@ -355,9 +380,9 @@ class LockService : Service() {
         clicking = false
         h.removeCallbacksAndMessages(null)
         marker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        lockView?.let { try { lockWm?.removeView(it) } catch (_: Exception) {} }
+        removeLockViews()
         if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {} }
-        marker = null; lockView = null; rootShown = false
+        marker = null; rootShown = false
         super.onDestroy()
     }
 }
