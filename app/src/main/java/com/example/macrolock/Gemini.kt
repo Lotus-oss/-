@@ -9,7 +9,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 object Gemini {
-    private const val GROQ_VISION_DEFAULT = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private const val GROQ_VISION_DEFAULT = "qwen/qwen3.6-27b"
 
     // 키가 gsk_ 로 시작하면 Groq, 아니면 기존 Gemini 방식으로 호출
     fun ask(bmp: Bitmap, prompt: String, key: String, model: String, search: Boolean): String =
@@ -58,8 +58,10 @@ object Gemini {
     }
 
     private fun askGroq(bmp: Bitmap, prompt: String, key: String, modelIn: String): String {
-        // 예전 Gemini 모델 이름이 남아 있으면 Groq 비전 모델로 대체
-        val model = if (modelIn.isBlank() || modelIn.startsWith("gemini")) GROQ_VISION_DEFAULT else modelIn
+        // 이미지를 못 받거나 종료된 모델 이름이 남아 있으면 Groq 비전 모델로 대체
+        val noVision = modelIn.isBlank() || modelIn.startsWith("gemini") ||
+            modelIn.contains("gpt-oss") || modelIn.contains("llama-4") || modelIn.contains("llama-3")
+        val model = if (noVision) GROQ_VISION_DEFAULT else modelIn
         val b64 = toBase64(bmp)
         val content = JSONArray()
             .put(JSONObject().put("type", "text").put("text", prompt))
