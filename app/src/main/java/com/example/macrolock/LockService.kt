@@ -1,6 +1,8 @@
 package com.example.macrolock
 
 import android.app.*
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -11,10 +13,17 @@ import android.view.*
 import android.widget.*
 import kotlin.math.abs
 
+private class MaxScroll(ctx: Context, private val maxH: Int) : ScrollView(ctx) {
+    override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+        super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST))
+    }
+}
+
 class LockService : Service() {
     private lateinit var wm: WindowManager
     private var lockWm: WindowManager? = null
     private val h = Handler(Looper.getMainLooper())
+    private var alive = true
 
     private var root: FrameLayout? = null
     private var rootShown = false
@@ -27,6 +36,10 @@ class LockService : Service() {
     private lateinit var icon: TextView
     private lateinit var panel: LinearLayout
     private lateinit var rootLp: WindowManager.LayoutParams
+
+    private var aiView: View? = null
+    private var aiText: TextView? = null
+    private lateinit var aiLp: WindowManager.LayoutParams
 
     private var clicking = false
     private var picking = false
@@ -89,6 +102,7 @@ class LockService : Service() {
             .setContentTitle("클릭 락 작동 중")
             .setSmallIcon(android.R.drawable.ic_lock_lock).build())
         if (root != null) return START_NOT_STICKY
+        alive = true
         wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         cx = prefs().getFloat("cx", 0f)
         cy = prefs().getFloat("cy", 0f)
@@ -187,7 +201,12 @@ class LockService : Service() {
         clickBtn = btn("▶ 클릭 시작") { toggleClick() }
         posBtn = btn("⌖ 클릭 위치 지정") { togglePick() }
 
+        val aiRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        aiRow.addView(btn("🔍 검색") { askAi(true) }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        aiRow.addView(btn("📝 풀이") { askAi(false) }, LinearLayout.LayoutParams(0, WRAP, 1f))
+
         panel.addView(title)
+        panel.addView(aiRow)
         panel.addView(statusTv)
         panel.addView(row)
         panel.addView(clickBtn)
@@ -202,6 +221,101 @@ class LockService : Service() {
         root = fr
     }
 
+    // ---------- AI ----------
+    private fun prompt(search: Boolean) = if (search)
+        "이 화면에 보이는 내용을 한국어로 설명하고, 필요하면 웹 검색으로 정보를 찾아서 핵심만 간단히 정리해줘. 마크다운 서식 없이 일반 텍스트로 답해줘."
+    else
+        "이 화면에 있는 문제를 풀어줘. 한국어로 정답을 맨 위에 먼저 쓰고, 그 아래에 간단한 풀이 과정을 써줘. 객관식이면 정답 번호를 먼저 말해줘. 마크다운 서식 없이 일반 텍스트로 답해줘."
+
+    private fun askAi(search: Boolean) {
+        val key = prefs().getString("gkey", "") ?: ""
+        if (key.isBlank()) { toast("앱 첫 화면에서 Gemini API 키를 저장하세요"); return }
+        val svc = ClickService.instance
+        if (svc == null) { toast("접근성 서비스를 먼저 켜세요 (앱 첫 화면)"); return }
+        val model = prefs().getString("gmodel", "gemini-3.6-flash") ?: "gemini-3.6-flash"
+
+        closeAi()
+        setExpanded(false)
+        root?.visibility = View.INVISIBLE
+        h.postDelayed({
+            svc.screenshot { bmp, err ->
+                root?.visibility = View.VISIBLE
+                if (bmp == null) {
+                    showAi(err ?: "캡처에 실패했습니다")
+                    return@screenshot
+                }
+                showAi("분석 중... ⏳")
+                Thread {
+                    val result = try {
+                        Gemini.ask(bmp, prompt(search), key, model, search)
+                    } catch (e: Exception) {
+                        "오류: ${e.message}"
+                    }
+                    h.post { showAi(result) }
+                }.start()
+            }
+        }, 250)
+    }
+
+    private fun showAi(msg: String) {
+        if (!alive) return
+        if (aiView == null) buildAi()
+        aiText?.text = msg
+    }
+
+    private fun buildAi() {
+        val dm = resources.displayMetrics
+        val w = minOf((dm.widthPixels * 0.92).toInt(), dp(560))
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                setColor(0xF2151A26.toInt()); cornerRadius = dp(18).toFloat()
+            }
+        }
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        }
+        val title = TextView(this).apply {
+            text = "🤖 AI 답변 (끌어서 이동)"
+            setTextColor(Color.WHITE); textSize = 13f
+        }
+        bar.addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
+        bar.addView(btn("복사") { copyAi() })
+        bar.addView(btn("닫기") { closeAi() })
+
+        val tv = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 15f
+            setPadding(0, dp(8), 0, 0)
+        }
+        val sc = MaxScroll(this, (dm.heightPixels * 0.5).toInt()).apply { addView(tv) }
+        box.addView(bar)
+        box.addView(sc)
+
+        aiLp = wlp(w, WRAP, NF or NL).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = (dm.widthPixels - w) / 2
+            y = dp(80)
+        }
+        drag(title, box, aiLp)
+        wm.addView(box, aiLp)
+        aiView = box
+        aiText = tv
+    }
+
+    private fun copyAi() {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("ai", aiText?.text ?: ""))
+        toast("복사됨")
+    }
+
+    private fun closeAi() {
+        aiView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        aiView = null
+        aiText = null
+    }
+
+    // ---------- 클릭 ----------
     private fun toggleClick() {
         if (clicking) { stopClick(); return }
         if (ClickService.instance == null) { toast("접근성 서비스를 먼저 켜세요 (앱 첫 화면)"); return }
@@ -260,9 +374,11 @@ class LockService : Service() {
         marker = m
     }
 
+    // ---------- 잠금 ----------
     private fun lock(pass: Boolean) {
         if (!Pw.isSet(this)) { toast("앱 첫 화면에서 PIN을 먼저 저장하세요"); return }
         if (picking) togglePick()
+        closeAi()
         if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {}; rootShown = false }
         showLock(pass)
     }
@@ -377,9 +493,11 @@ class LockService : Service() {
     }
 
     override fun onDestroy() {
+        alive = false
         clicking = false
         h.removeCallbacksAndMessages(null)
         marker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        closeAi()
         removeLockViews()
         if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {} }
         marker = null; rootShown = false
