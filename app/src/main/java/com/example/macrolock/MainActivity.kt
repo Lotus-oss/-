@@ -54,9 +54,9 @@ class MainActivity : Activity() {
         })
 
         val acc = ClickService.instance != null
-        root.addView(label("2. 자동 클릭(접근성): " + if (acc) "켜짐 ✅" else "꺼짐 ❌"))
+        root.addView(label("2. 자동 클릭·화면 캡처(접근성): " + if (acc) "켜짐 ✅" else "꺼짐 ❌"))
         if (!acc) {
-            root.addView(label("※ 안 켜지면: 설정 → 앱 → MacroLock → 오른쪽 위 ⋮ → '제한된 설정 허용' 후 다시 시도"))
+            root.addView(label("※ 안 켜지면: 설정 → 앱 → 이 앱 → 오른쪽 위 ⋮ → '제한된 설정 허용' 후 다시 시도"))
             root.addView(btn("접근성 설정 열기") {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             })
@@ -74,7 +74,31 @@ class MainActivity : Activity() {
             else { Pw.save(this, s); toast("저장됨"); build() }
         })
 
-        root.addView(label("4. 화면에 패널 띄우기\n패널에서 클릭 위치 지정, 간격 설정, 클릭 시작, 잠금을 모두 할 수 있습니다."))
+        val sp = getSharedPreferences("lock", Context.MODE_PRIVATE)
+        val savedKey = sp.getString("gkey", "") ?: ""
+        root.addView(label("4. Gemini API 키: " +
+            if (savedKey.isNotBlank()) "저장됨 ✅ (끝 4자리 ${savedKey.takeLast(4)})" else "미설정 ❌"))
+        val keyInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            hint = "API 키 붙여넣기 (비우면 기존 키 유지)"
+        }
+        root.addView(keyInput)
+        root.addView(label("모델 이름 (오류 나면 바꿔보세요)"))
+        val modelInput = EditText(this).apply {
+            setText(sp.getString("gmodel", "gemini-3.6-flash"))
+        }
+        root.addView(modelInput)
+        root.addView(btn("AI 설정 저장") {
+            val k = keyInput.text.toString().trim()
+            val m = modelInput.text.toString().trim().ifEmpty { "gemini-3.6-flash" }
+            val e = sp.edit().putString("gmodel", m)
+            if (k.isNotEmpty()) e.putString("gkey", k)
+            e.apply()
+            toast("저장됨")
+            build()
+        })
+
+        root.addView(label("5. 화면에 패널 띄우기\n패널에서 AI 검색·풀이, 클릭 위치 지정, 잠금을 할 수 있습니다."))
         root.addView(btn("패널 열기") {
             if (!Settings.canDrawOverlays(this)) toast("오버레이 권한을 먼저 허용하세요")
             else {
