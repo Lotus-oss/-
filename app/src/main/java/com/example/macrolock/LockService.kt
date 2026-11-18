@@ -521,4 +521,88 @@ class LockService : Service() {
                 val now = SystemClock.uptimeMillis()
                 taps = if (now - lastTap < 2000) taps + 1 else 1
                 lastTap = now
-  
+                if (taps >= 3) { taps = 0; showPad(mgr, type) }
+            }
+        }
+        val hLp = WindowManager.LayoutParams(WRAP, WRAP, type, NF or NL, PixelFormat.TRANSLUCENT)
+            .apply { gravity = Gravity.BOTTOM or Gravity.END; x = dp(48); y = dp(48) }
+        mgr.addView(hint, hLp)
+        lockViews.add(hint)
+    }
+
+    private fun showPad(mgr: WindowManager, type: Int) {
+        if (padView != null) return
+        val pad = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            setBackgroundColor(0xFF222222.toInt())
+        }
+        val pin = StringBuilder()
+        val disp = TextView(this).apply {
+            textSize = 26f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            text = "PIN 입력"; setPadding(0, 0, 0, dp(12))
+        }
+        fun refresh() { disp.text = if (pin.isEmpty()) "PIN 입력" else "●".repeat(pin.length) }
+        fun key(label: String, a: () -> Unit) = Button(this).apply {
+            text = label; textSize = 20f; setOnClickListener { a() }
+            layoutParams = LinearLayout.LayoutParams(0, dp(60), 1f)
+        }
+        pad.addView(disp)
+        val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"),
+            listOf("7", "8", "9"), listOf("지움", "0", "확인"))
+        for (r in rows) {
+            val lr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (k in r) lr.addView(key(k) {
+                when (k) {
+                    "지움" -> { if (pin.isNotEmpty()) pin.deleteCharAt(pin.length - 1); refresh() }
+                    "확인" -> {
+                        if (Pw.check(this, pin.toString())) unlock()
+                        else { pin.clear(); refresh(); toast("PIN이 틀렸습니다") }
+                    }
+                    else -> { if (pin.length < 12) pin.append(k); refresh() }
+                }
+            })
+            pad.addView(lr)
+        }
+        pad.addView(Button(this).apply {
+            text = "취소"
+            setOnClickListener {
+                try { lockWm?.removeView(pad) } catch (_: Exception) {}
+                lockViews.remove(pad)
+                padView = null
+            }
+        })
+        val lp = WindowManager.LayoutParams(dp(320), WRAP, type, NF or NL, PixelFormat.TRANSLUCENT)
+            .apply { gravity = Gravity.CENTER }
+        mgr.addView(pad, lp)
+        padView = pad
+        lockViews.add(pad)
+    }
+
+    private fun removeLockViews() {
+        for (v in lockViews) try { lockWm?.removeView(v) } catch (_: Exception) {}
+        lockViews.clear()
+        lockBg = null; lockBgLp = null; padView = null
+    }
+
+    private fun unlock() {
+        removeLockViews()
+        if (!rootShown && root != null) {
+            wm.addView(root, rootLp)
+            rootShown = true
+            setExpanded(false)
+        }
+    }
+
+    override fun onDestroy() {
+        alive = false
+        clicking = false
+        h.removeCallbacksAndMessages(null)
+        marker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        closeAi()
+        removeLockViews()
+        if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {} }
+        marker = null; rootShown = false
+        super.onDestroy()
+    }
+}
