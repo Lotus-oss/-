@@ -5,17 +5,19 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.*
+import android.util.DisplayMetrics
 import android.view.*
 import android.widget.*
 import kotlin.math.abs
 
-private class MaxScroll(ctx: Context, private val maxH: Int) : ScrollView(ctx) {
+private class MaxScroll(ctx: Context, private val maxH: () -> Int) : ScrollView(ctx) {
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
-        super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(maxH, View.MeasureSpec.AT_MOST))
+        super.onMeasure(widthSpec, View.MeasureSpec.makeMeasureSpec(maxH(), View.MeasureSpec.AT_MOST))
     }
 }
 
@@ -67,6 +69,18 @@ class LockService : Service() {
         WindowManager.LayoutParams(w, hh,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, flags, fmt)
 
+    @Suppress("DEPRECATION")
+    private fun screenSize(): Pair<Int, Int> {
+        val m = DisplayMetrics()
+        wm.defaultDisplay.getRealMetrics(m)
+        return Pair(m.widthPixels, m.heightPixels)
+    }
+
+    private fun statusBarH(): Int {
+        val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
+    }
+
     private val clickLoop = object : Runnable {
         override fun run() {
             if (!clicking) return
@@ -117,21 +131,68 @@ class LockService : Service() {
         return START_NOT_STICKY
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        h.postDelayed({
+            if (!alive) return@postDelayed
+            aiView?.let {
+                val sw = screenSize().first
+                aiLp.width = minOf((sw * 0.92).toInt(), dp(560))
+                try { wm.updateViewLayout(it, aiLp) } catch (_: Exception) {}
+                fixPosition(aiLp, it)
+            }
+            root?.let { if (rootShown) fixPosition(rootLp, it) }
+        }, 300)
+    }
+
+    // ---------- 공통 UI ----------
     private fun btn(label: String, a: () -> Unit) = Button(this).apply {
         text = label; isAllCaps = false; textSize = 13f
         setOnClickListener { a() }
     }
 
-    private fun drag(v: View, target: View, lp: WindowManager.LayoutParams, onTap: (() -> Unit)? = null) {
-        var sx = 0; var sy = 0; var tx = 0f; var ty = 0f; var moved = false
-        v.setOnTouchListener { _, e ->
+    private fun smallBtn(label: String, a: () -> Unit) = Button(this).apply {
+        text = label; isAllCaps = false; textSize = 14f
+        minWidth = 0; minimumWidth = dp(48)
+        minHeight = 0; minimumHeight = dp(44)
+        setPadding(dp(6), 0, dp(6), 0)
+        setOnClickListener { a() }
+    }
+
+    private fun row2(a: View, b: View) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        addView(a, LinearLayout.LayoutParams(0, WRAP, 1f))
+        addView(b, LinearLayout.LayoutParams(0, WRAP, 1f))
+    }
+
+    /** handle을 끌면 target 창이 이동. 상태바 아래/화면 안으로만 움직임 */
+    private fun drag(
+        handle: View, target: View, lp: WindowManager.LayoutParams,
+        full: Boolean = false, onTap: (() -> Unit)? = null
+    ) {
+        var sx = 0; var sy = 0; var tx = 0f; var ty = 0f
+        var offX = 0; var offY = 0; var moved = false
+        handle.setOnTouchListener { _, e ->
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> { sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY; moved = false }
+                MotionEvent.ACTION_DOWN -> {
+                    sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY; moved = false
+                    val loc = IntArray(2)
+                    target.getLocationOnScreen(loc)
+                    offX = loc[0] - lp.x; offY = loc[1] - lp.y
+                }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - tx; val dy = e.rawY - ty
                     if (!moved && (abs(dx) > dp(8) || abs(dy) > dp(8))) moved = true
                     if (moved) {
-                        lp.x = sx + dx.toInt(); lp.y = sy + dy.toInt()
+                        val (sw, sh) = screenSize()
+                        val keepX = if (full) target.width else dp(80)
+                        val keepY = if (full) target.height else dp(100)
+                        val minX = -offX
+                        val maxX = maxOf(minX, sw - offX - keepX)
+                        val minY = statusBarH() - offY
+                        val maxY = maxOf(minY, sh - offY - keepY)
+                        lp.x = (sx + dx.toInt()).coerceIn(minX, maxX)
+                        lp.y = (sy + dy.toInt()).coerceIn(minY, maxY)
                         try { wm.updateViewLayout(target, lp) } catch (_: Exception) {}
                     }
                 }
@@ -139,6 +200,29 @@ class LockService : Service() {
             }
             true
         }
+    }
+
+    /** 펼치기/회전 뒤에 창 전체가 화면 안에 들어오도록 위치 보정 */
+    private fun fixPosition(lp: WindowManager.LayoutParams, v: View) {
+        v.postDelayed({
+            try {
+                if (!alive || !v.isAttachedToWindow) return@postDelayed
+                val loc = IntArray(2)
+                v.getLocationOnScreen(loc)
+                val offX = loc[0] - lp.x; val offY = loc[1] - lp.y
+                val (sw, sh) = screenSize()
+                val minX = -offX
+                val maxX = maxOf(minX, sw - offX - v.width)
+                val minY = statusBarH() - offY
+                val maxY = maxOf(minY, sh - offY - v.height)
+                val nx = lp.x.coerceIn(minX, maxX)
+                val ny = lp.y.coerceIn(minY, maxY)
+                if (nx != lp.x || ny != lp.y) {
+                    lp.x = nx; lp.y = ny
+                    wm.updateViewLayout(v, lp)
+                }
+            } catch (_: Exception) {}
+        }, 150)
     }
 
     private fun refreshStatus() {
@@ -159,6 +243,7 @@ class LockService : Service() {
         icon.visibility = if (open) View.GONE else View.VISIBLE
         panel.visibility = if (open) View.VISIBLE else View.GONE
         try { wm.updateViewLayout(root, rootLp) } catch (_: Exception) {}
+        root?.let { fixPosition(rootLp, it) }
     }
 
     private fun buildRoot() {
@@ -176,48 +261,60 @@ class LockService : Service() {
 
         panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(10))
+            setPadding(dp(8), dp(6), dp(8), dp(8))
             background = GradientDrawable().apply {
                 setColor(0xEE1E2330.toInt()); cornerRadius = dp(18).toFloat()
             }
             visibility = View.GONE
         }
-        val title = TextView(this).apply {
-            text = "☰ 끌어서 이동"
-            setTextColor(Color.WHITE); textSize = 13f
-            setPadding(0, 0, 0, dp(6))
+
+        // 제목줄: 크게 잡고 끌 수 있고, 접기/종료 버튼은 항상 보임
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
-        statusTv = TextView(this).apply { setTextColor(0xFFAAB0C0.toInt()); textSize = 12f }
+        val title = TextView(this).apply {
+            text = "☰ 여기를 잡고 이동"
+            setTextColor(Color.WHITE); textSize = 14f
+            gravity = Gravity.CENTER_VERTICAL
+            minHeight = dp(52)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        header.addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
+        header.addView(smallBtn("▼") { setExpanded(false) })
+        header.addView(smallBtn("✕") { stopSelf() })
+
+        statusTv = TextView(this).apply {
+            setTextColor(0xFFAAB0C0.toInt()); textSize = 12f
+            setPadding(dp(4), dp(2), dp(4), dp(2))
+        }
         intervalTv = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 14f; gravity = Gravity.CENTER
         }
-        val row = LinearLayout(this).apply {
+        val ivRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
-        row.addView(btn("−") { setInterval(interval - step()) })
-        row.addView(intervalTv, LinearLayout.LayoutParams(0, WRAP, 1f))
-        row.addView(btn("+") { setInterval(interval + step()) })
+        ivRow.addView(smallBtn("−") { setInterval(interval - step()) })
+        ivRow.addView(intervalTv, LinearLayout.LayoutParams(0, WRAP, 1f))
+        ivRow.addView(smallBtn("+") { setInterval(interval + step()) })
 
         clickBtn = btn("▶ 클릭 시작") { toggleClick() }
-        posBtn = btn("⌖ 클릭 위치 지정") { togglePick() }
+        posBtn = btn("⌖ 위치 지정") { togglePick() }
 
-        val aiRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        aiRow.addView(btn("🔍 검색") { askAi(true) }, LinearLayout.LayoutParams(0, WRAP, 1f))
-        aiRow.addView(btn("📝 풀이") { askAi(false) }, LinearLayout.LayoutParams(0, WRAP, 1f))
-
-        panel.addView(title)
-        panel.addView(aiRow)
-        panel.addView(statusTv)
-        panel.addView(row)
-        panel.addView(clickBtn)
-        panel.addView(posBtn)
-        panel.addView(btn("🌙 암전 잠금\n(다른 클릭앱 통과)") { lock(true) })
-        panel.addView(btn("🔒 완전 잠금\n(모든 터치 차단)") { lock(false) })
-        panel.addView(btn("▼ 접기") { setExpanded(false) })
-        panel.addView(btn("✕ 종료") { stopSelf() })
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(statusTv)
+        content.addView(ivRow)
+        content.addView(row2(btn("🔍 검색") { askAi(true) }, btn("📝 풀이") { askAi(false) }))
+        content.addView(row2(clickBtn, posBtn))
+        content.addView(row2(btn("🌙 암전 잠금") { lock(true) }, btn("🔒 완전 잠금") { lock(false) }))
         refreshStatus()
-        fr.addView(panel, FrameLayout.LayoutParams(dp(190), WRAP))
+
+        val sc = MaxScroll(this) { (screenSize().second * 0.7).toInt() }.apply { addView(content) }
+        panel.addView(header)
+        panel.addView(sc)
+        fr.addView(panel, FrameLayout.LayoutParams(dp(250), WRAP))
+
         drag(title, fr, rootLp)
+        drag(panel, fr, rootLp)
         root = fr
     }
 
@@ -264,11 +361,11 @@ class LockService : Service() {
     }
 
     private fun buildAi() {
-        val dm = resources.displayMetrics
-        val w = minOf((dm.widthPixels * 0.92).toInt(), dp(560))
+        val (sw, _) = screenSize()
+        val w = minOf((sw * 0.92).toInt(), dp(560))
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(12))
+            setPadding(dp(14), dp(6), dp(14), dp(12))
             background = GradientDrawable().apply {
                 setColor(0xF2151A26.toInt()); cornerRadius = dp(18).toFloat()
             }
@@ -277,30 +374,35 @@ class LockService : Service() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
         val title = TextView(this).apply {
-            text = "🤖 AI 답변 (끌어서 이동)"
-            setTextColor(Color.WHITE); textSize = 13f
+            text = "🤖 AI 답변 (여기를 잡고 이동)"
+            setTextColor(Color.WHITE); textSize = 14f
+            gravity = Gravity.CENTER_VERTICAL
+            minHeight = dp(52)
+            setPadding(0, dp(8), dp(8), dp(8))
         }
         bar.addView(title, LinearLayout.LayoutParams(0, WRAP, 1f))
-        bar.addView(btn("복사") { copyAi() })
-        bar.addView(btn("닫기") { closeAi() })
+        bar.addView(smallBtn("복사") { copyAi() })
+        bar.addView(smallBtn("닫기") { closeAi() })
 
         val tv = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 15f
             setPadding(0, dp(8), 0, 0)
         }
-        val sc = MaxScroll(this, (dm.heightPixels * 0.5).toInt()).apply { addView(tv) }
+        val sc = MaxScroll(this) { (screenSize().second * 0.5).toInt() }.apply { addView(tv) }
         box.addView(bar)
         box.addView(sc)
 
         aiLp = wlp(w, WRAP, NF or NL).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (dm.widthPixels - w) / 2
+            x = (sw - w) / 2
             y = dp(80)
         }
         drag(title, box, aiLp)
+        drag(box, box, aiLp)
         wm.addView(box, aiLp)
         aiView = box
         aiText = tv
+        fixPosition(aiLp, box)
     }
 
     private fun copyAi() {
@@ -348,7 +450,7 @@ class LockService : Service() {
             }
             marker = null
             picking = false
-            posBtn.text = "⌖ 클릭 위치 지정"
+            posBtn.text = "⌖ 위치 지정"
             refreshStatus()
         }
     }
@@ -363,13 +465,13 @@ class LockService : Service() {
                 setColor(0x33FF0000); setStroke(dp(3), Color.RED)
             }
         }
-        val dm = resources.displayMetrics
+        val (sw, sh) = screenSize()
         val lp = wlp(size, size, NF or NL).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = if (cx > 0f) (cx - size / 2).toInt() else dm.widthPixels / 2 - size / 2
-            y = if (cy > 0f) (cy - size / 2).toInt() else dm.heightPixels / 2 - size / 2
+            x = if (cx > 0f) (cx - size / 2).toInt() else sw / 2 - size / 2
+            y = if (cy > 0f) (cy - size / 2).toInt() else sh / 2 - size / 2
         }
-        drag(m, m, lp)
+        drag(m, m, lp, full = true)
         wm.addView(m, lp)
         marker = m
     }
@@ -419,88 +521,4 @@ class LockService : Service() {
                 val now = SystemClock.uptimeMillis()
                 taps = if (now - lastTap < 2000) taps + 1 else 1
                 lastTap = now
-                if (taps >= 3) { taps = 0; showPad(mgr, type) }
-            }
-        }
-        val hLp = WindowManager.LayoutParams(WRAP, WRAP, type, NF or NL, PixelFormat.TRANSLUCENT)
-            .apply { gravity = Gravity.BOTTOM or Gravity.END; x = dp(48); y = dp(48) }
-        mgr.addView(hint, hLp)
-        lockViews.add(hint)
-    }
-
-    private fun showPad(mgr: WindowManager, type: Int) {
-        if (padView != null) return
-        val pad = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(20), dp(20), dp(20))
-            setBackgroundColor(0xFF222222.toInt())
-        }
-        val pin = StringBuilder()
-        val disp = TextView(this).apply {
-            textSize = 26f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            text = "PIN 입력"; setPadding(0, 0, 0, dp(12))
-        }
-        fun refresh() { disp.text = if (pin.isEmpty()) "PIN 입력" else "●".repeat(pin.length) }
-        fun key(label: String, a: () -> Unit) = Button(this).apply {
-            text = label; textSize = 20f; setOnClickListener { a() }
-            layoutParams = LinearLayout.LayoutParams(0, dp(60), 1f)
-        }
-        pad.addView(disp)
-        val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"),
-            listOf("7", "8", "9"), listOf("지움", "0", "확인"))
-        for (r in rows) {
-            val lr = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            for (k in r) lr.addView(key(k) {
-                when (k) {
-                    "지움" -> { if (pin.isNotEmpty()) pin.deleteCharAt(pin.length - 1); refresh() }
-                    "확인" -> {
-                        if (Pw.check(this, pin.toString())) unlock()
-                        else { pin.clear(); refresh(); toast("PIN이 틀렸습니다") }
-                    }
-                    else -> { if (pin.length < 12) pin.append(k); refresh() }
-                }
-            })
-            pad.addView(lr)
-        }
-        pad.addView(Button(this).apply {
-            text = "취소"
-            setOnClickListener {
-                try { lockWm?.removeView(pad) } catch (_: Exception) {}
-                lockViews.remove(pad)
-                padView = null
-            }
-        })
-        val lp = WindowManager.LayoutParams(dp(320), WRAP, type, NF or NL, PixelFormat.TRANSLUCENT)
-            .apply { gravity = Gravity.CENTER }
-        mgr.addView(pad, lp)
-        padView = pad
-        lockViews.add(pad)
-    }
-
-    private fun removeLockViews() {
-        for (v in lockViews) try { lockWm?.removeView(v) } catch (_: Exception) {}
-        lockViews.clear()
-        lockBg = null; lockBgLp = null; padView = null
-    }
-
-    private fun unlock() {
-        removeLockViews()
-        if (!rootShown && root != null) {
-            wm.addView(root, rootLp)
-            rootShown = true
-            setExpanded(false)
-        }
-    }
-
-    override fun onDestroy() {
-        alive = false
-        clicking = false
-        h.removeCallbacksAndMessages(null)
-        marker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-        closeAi()
-        removeLockViews()
-        if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {} }
-        marker = null; rootShown = false
-        super.onDestroy()
-    }
-}
+  
