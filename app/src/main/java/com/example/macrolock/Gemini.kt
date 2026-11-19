@@ -35,7 +35,7 @@ object Gemini {
             .put("model", model)
             .put("messages", JSONArray().put(
                 JSONObject().put("role", "user").put("content", content)))
-        if (!search && (model.contains("qwen3.8") || model.contains("gpt-oss"))) {
+        if (false) {
             body.put("reasoning_effort", "medium")
             body.put("max_completion_tokens", 5000)
         }
