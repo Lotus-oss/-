@@ -11,10 +11,31 @@ import android.view.accessibility.AccessibilityEvent
 
 class ClickService : AccessibilityService() {
     companion object { var instance: ClickService? = null }
+    private var guard: AppLockGuard? = null
 
-    override fun onServiceConnected() { instance = this }
-    override fun onUnbind(intent: Intent?): Boolean { instance = null; return super.onUnbind(intent) }
-    override fun onAccessibilityEvent(e: AccessibilityEvent?) {}
+    override fun onServiceConnected() {
+        instance = this
+        guard = AppLockGuard(this)
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        instance = null
+        guard?.destroy()
+        guard = null
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        guard?.destroy()
+        guard = null
+        super.onDestroy()
+    }
+
+    override fun onAccessibilityEvent(e: AccessibilityEvent?) {
+        if (e == null) return
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) guard?.onEvent(e.packageName)
+    }
+
     override fun onInterrupt() {}
 
     fun click(x: Float, y: Float, done: (() -> Unit)? = null) {
