@@ -33,7 +33,10 @@ class ClickService : AccessibilityService() {
 
     override fun onAccessibilityEvent(e: AccessibilityEvent?) {
         if (e == null) return
-        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) guard?.onEvent(e.packageName)
+        when (e.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> guard?.onEvent(e.packageName)
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> guard?.reconcile()
+        }
     }
 
     override fun onInterrupt() {}
