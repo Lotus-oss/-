@@ -11,7 +11,7 @@
         </intent>
     </queries>
     <application
-        android:label="J사 자물쇠"
+        android:label="신의 안배"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
