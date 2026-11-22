@@ -6,8 +6,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.PorterDuff
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.*
 import android.util.DisplayMetrics
@@ -55,6 +59,14 @@ class LockService : Service() {
     private lateinit var clickBtn: Button
     private lateinit var posBtn: Button
 
+    // 잠금 화면: 경과 시간 + 단계별 배경
+    private var lockStartMs = 0L
+    private var lockTimerTv: TextView? = null
+    private var lockImg: ImageView? = null
+    private var lockStage = -1
+    private val STAGE_MS = 2L * 60 * 60 * 1000      // 2시간마다 배경 변경
+    private val SCRIM = 0x73000000                    // 사진 어둡게 (값이 작을수록 밝아짐)
+
     private val NF = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
     private val NL = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
     private val NT = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -80,6 +92,10 @@ class LockService : Service() {
         val id = resources.getIdentifier("status_bar_height", "dimen", "android")
         return if (id > 0) resources.getDimensionPixelSize(id) else dp(24)
     }
+
+    private fun decodeRes(id: Int): Bitmap? = try {
+        BitmapFactory.decodeResource(resources, id, BitmapFactory.Options().apply { inScaled = false })
+    } catch (_: Throwable) { null }
 
     private val clickLoop = object : Runnable {
         override fun run() {
@@ -165,7 +181,6 @@ class LockService : Service() {
         addView(b, LinearLayout.LayoutParams(0, WRAP, 1f))
     }
 
-    /** handle을 끌면 target 창이 이동. 상태바 아래/화면 안으로만 움직임 */
     private fun drag(
         handle: View, target: View, lp: WindowManager.LayoutParams,
         full: Boolean = false, onTap: (() -> Unit)? = null
@@ -202,7 +217,6 @@ class LockService : Service() {
         }
     }
 
-    /** 펼치기/회전 뒤에 창 전체가 화면 안에 들어오도록 위치 보정 */
     private fun fixPosition(lp: WindowManager.LayoutParams, v: View) {
         v.postDelayed({
             try {
@@ -253,7 +267,7 @@ class LockService : Service() {
             text = "🎯"; textSize = 22f; gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xEE1E2330.toInt()); setStroke(dp(2), 0xFF22C55E.toInt())
+                setColor(0xEE0B1220.toInt()); setStroke(dp(2), 0xFFE8B84A.toInt())
             }
         }
         fr.addView(icon, FrameLayout.LayoutParams(dp(52), dp(52)))
@@ -263,12 +277,12 @@ class LockService : Service() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(8), dp(6), dp(8), dp(8))
             background = GradientDrawable().apply {
-                setColor(0xEE1E2330.toInt()); cornerRadius = dp(18).toFloat()
+                setColor(0xEE0B1220.toInt()); cornerRadius = dp(18).toFloat()
+                setStroke(dp(1), 0x66E8B84A)
             }
             visibility = View.GONE
         }
 
-        // 제목줄: 크게 잡고 끌 수 있고, 접기/종료 버튼은 항상 보임
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
@@ -284,7 +298,7 @@ class LockService : Service() {
         header.addView(smallBtn("✕") { stopSelf() })
 
         statusTv = TextView(this).apply {
-            setTextColor(0xFFAAB0C0.toInt()); textSize = 12f
+            setTextColor(0xFFC9BC9A.toInt()); textSize = 12f
             setPadding(dp(4), dp(2), dp(4), dp(2))
         }
         intervalTv = TextView(this).apply {
@@ -326,10 +340,10 @@ class LockService : Service() {
 
     private fun askAi(search: Boolean) {
         val key = prefs().getString("gkey", "") ?: ""
-        if (key.isBlank()) { toast("앱 첫 화면에서 Gemini API 키를 저장하세요"); return }
+        if (key.isBlank()) { toast("앱 첫 화면에서 API 키를 저장하세요"); return }
         val svc = ClickService.instance
         if (svc == null) { toast("접근성 서비스를 먼저 켜세요 (앱 첫 화면)"); return }
-        val model = prefs().getString("gmodel", "gemini-3.6-flash") ?: "gemini-3.6-flash"
+        val model = prefs().getString("gmodel", "qwen/qwen3.8-27b") ?: "qwen/qwen3.8-27b"
 
         closeAi()
         setExpanded(false)
@@ -367,7 +381,8 @@ class LockService : Service() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(6), dp(14), dp(12))
             background = GradientDrawable().apply {
-                setColor(0xF2151A26.toInt()); cornerRadius = dp(18).toFloat()
+                setColor(0xF20B1220.toInt()); cornerRadius = dp(18).toFloat()
+                setStroke(dp(1), 0x66E8B84A)
             }
         }
         val bar = LinearLayout(this).apply {
@@ -477,6 +492,31 @@ class LockService : Service() {
     }
 
     // ---------- 잠금 ----------
+    private fun fmt(ms: Long): String {
+        val s = ms / 1000
+        return "%02d:%02d:%02d".format(s / 3600, (s % 3600) / 60, s % 60)
+    }
+
+    private fun applyStageImage(stage: Int) {
+        val iv = lockImg ?: return
+        if (stage <= 0) { iv.setImageDrawable(null); return }
+        val id = resources.getIdentifier("lock_bg$stage", "drawable", packageName)
+        val bmp = if (id != 0) decodeRes(id) else null
+        if (bmp != null) iv.setImageBitmap(bmp) else iv.setImageDrawable(null)
+    }
+
+    private val lockTick = object : Runnable {
+        override fun run() {
+            if (lockBg == null) return
+            val el = SystemClock.elapsedRealtime() - lockStartMs
+            val stage = minOf((el / STAGE_MS).toInt(), 3)
+            if (stage != lockStage) { lockStage = stage; applyStageImage(stage) }
+            val next = if (stage < 3) "다음 배경까지 ${fmt((stage + 1) * STAGE_MS - el)}" else "마지막 배경"
+            lockTimerTv?.text = "⏱ ${fmt(el)}\n$next"
+            h.postDelayed(this, 1000)
+        }
+    }
+
     private fun lock(pass: Boolean) {
         if (!Pw.isSet(this)) { toast("앱 첫 화면에서 PIN을 먼저 저장하세요"); return }
         if (picking) togglePick()
@@ -497,8 +537,22 @@ class LockService : Service() {
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or NL or NF
         val dim = pass && svc == null
 
-        val bg = View(this).apply { setBackgroundColor(Color.BLACK) }
+        val bg = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        val iv = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setColorFilter(SCRIM, PorterDuff.Mode.SRC_ATOP)
+        }
+        bg.addView(iv, FrameLayout.LayoutParams(MATCH, MATCH))
+        val tv = TextView(this).apply {
+            setTextColor(Color.WHITE); alpha = 0.6f
+            textSize = 18f; gravity = Gravity.CENTER
+            typeface = Typeface.MONOSPACE
+            setShadowLayer(6f, 0f, 1f, Color.BLACK)
+        }
+        bg.addView(tv, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+            .apply { topMargin = dp(48) })
         if (!pass) bg.setOnTouchListener { _, _ -> true }
+
         val bgLp = WindowManager.LayoutParams(
             MATCH, MATCH, type,
             if (pass) base or NT else base,
@@ -512,6 +566,11 @@ class LockService : Service() {
         lockViews.add(bg)
         lockBg = bg
         lockBgLp = bgLp
+        lockImg = iv
+        lockTimerTv = tv
+        lockStartMs = SystemClock.elapsedRealtime()
+        lockStage = -1
+        h.post(lockTick)
 
         val hint = TextView(this).apply {
             text = "🔒 3번 탭"; textSize = 20f
@@ -580,9 +639,12 @@ class LockService : Service() {
     }
 
     private fun removeLockViews() {
+        h.removeCallbacks(lockTick)
+        lockImg?.setImageDrawable(null)
         for (v in lockViews) try { lockWm?.removeView(v) } catch (_: Exception) {}
         lockViews.clear()
         lockBg = null; lockBgLp = null; padView = null
+        lockImg = null; lockTimerTv = null
     }
 
     private fun unlock() {
