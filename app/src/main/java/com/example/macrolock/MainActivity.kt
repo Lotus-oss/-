@@ -2,8 +2,10 @@ package com.example.macrolock
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -32,9 +34,35 @@ class MainActivity : Activity() {
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
 
+    private fun pickApps(sp: SharedPreferences) {
+        val pm = packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(intent, 0)
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .filter { it.first != packageName }
+            .distinctBy { it.first }
+            .sortedBy { it.second.lowercase() }
+        if (apps.isEmpty()) { toast("앱 목록을 불러오지 못했습니다"); return }
+        val sel = (sp.getStringSet("al_pkgs", emptySet()) ?: emptySet()).toMutableSet()
+        val names = apps.map { it.second }.toTypedArray()
+        val checked = BooleanArray(apps.size) { apps[it].first in sel }
+        AlertDialog.Builder(this)
+            .setTitle("잠글 앱 선택")
+            .setMultiChoiceItems(names, checked) { _, i, c ->
+                if (c) sel.add(apps[i].first) else sel.remove(apps[i].first)
+            }
+            .setPositiveButton("저장") { _, _ ->
+                sp.edit().putStringSet("al_pkgs", HashSet(sel)).apply()
+                build()
+            }
+            .setNegativeButton("취소", null)
+            .show()
+    }
+
     private fun build() {
         val dp = resources.displayMetrics.density
         val p = (20 * dp).toInt()
+        val sp = getSharedPreferences("lock", Context.MODE_PRIVATE)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(p, p * 2, p, p)
@@ -54,7 +82,7 @@ class MainActivity : Activity() {
         })
 
         val acc = ClickService.instance != null
-        root.addView(label("2. 자동 클릭·화면 캡처(접근성): " + if (acc) "켜짐 ✅" else "꺼짐 ❌"))
+        root.addView(label("2. 자동 클릭·화면 캡처·앱 잠금(접근성): " + if (acc) "켜짐 ✅" else "꺼짐 ❌"))
         if (!acc) {
             root.addView(label("※ 안 켜지면: 설정 → 앱 → 이 앱 → 오른쪽 위 ⋮ → '제한된 설정 허용' 후 다시 시도"))
             root.addView(btn("접근성 설정 열기") {
@@ -74,9 +102,8 @@ class MainActivity : Activity() {
             else { Pw.save(this, s); toast("저장됨"); build() }
         })
 
-        val sp = getSharedPreferences("lock", Context.MODE_PRIVATE)
         val savedKey = sp.getString("gkey", "") ?: ""
-        root.addView(label("4. Gemini API 키: " +
+        root.addView(label("4. AI API 키: " +
             if (savedKey.isNotBlank()) "저장됨 ✅ (끝 4자리 ${savedKey.takeLast(4)})" else "미설정 ❌"))
         val keyInput = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -85,12 +112,12 @@ class MainActivity : Activity() {
         root.addView(keyInput)
         root.addView(label("모델 이름 (오류 나면 바꿔보세요)"))
         val modelInput = EditText(this).apply {
-            setText(sp.getString("gmodel", "gemini-3.6-flash"))
+            setText(sp.getString("gmodel", "qwen/qwen3.8-27b"))
         }
         root.addView(modelInput)
         root.addView(btn("AI 설정 저장") {
             val k = keyInput.text.toString().trim()
-            val m = modelInput.text.toString().trim().ifEmpty { "gemini-3.6-flash" }
+            val m = modelInput.text.toString().trim().ifEmpty { "qwen/qwen3.8-27b" }
             val e = sp.edit().putString("gmodel", m)
             if (k.isNotEmpty()) e.putString("gkey", k)
             e.apply()
@@ -98,7 +125,17 @@ class MainActivity : Activity() {
             build()
         })
 
-        root.addView(label("5. 화면에 패널 띄우기\n패널에서 AI 검색·풀이, 클릭 위치 지정, 잠금을 할 수 있습니다."))
+        val lockedCount = (sp.getStringSet("al_pkgs", emptySet()) ?: emptySet()).size
+        root.addView(label("5. 앱 잠금 (선택한 앱을 열 때 PIN 요구)"))
+        root.addView(Switch(this).apply {
+            text = "앱 잠금 사용"; textSize = 16f
+            isChecked = sp.getBoolean("al_on", false)
+            setOnCheckedChangeListener { _, on -> sp.edit().putBoolean("al_on", on).apply() }
+        })
+        root.addView(btn("잠글 앱 선택 (${lockedCount}개)") { pickApps(sp) })
+        if (!acc) root.addView(label("※ 앱 잠금은 접근성이 켜져 있어야 작동합니다"))
+
+        root.addView(label("6. 화면에 아이콘 띄우기\n아이콘을 누르면 AI 검색·풀이, 클릭 위치 지정, 잠금을 할 수 있습니다."))
         root.addView(btn("패널 열기") {
             if (!Settings.canDrawOverlays(this)) toast("오버레이 권한을 먼저 허용하세요")
             else {
