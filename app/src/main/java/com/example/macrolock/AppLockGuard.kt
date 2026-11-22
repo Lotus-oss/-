@@ -8,6 +8,9 @@ import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
@@ -21,33 +24,54 @@ import android.widget.Toast
 
 class AppLockGuard(private val svc: AccessibilityService) {
     private val wm = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val h = Handler(Looper.getMainLooper())
     private var overlay: View? = null
     private var overlayPkg: String? = null
     private var unlockedPkg: String? = null
-    private var currentPkg: String? = null
     private val lastActive = HashMap<String, Long>()
-    private val grace = 10_000L
+
+    // 나갔다 돌아왔을 때 PIN을 면제해 주는 시간(ms). 0 = 항상 PIN. 예: 10_000L = 10초
+    private val grace = 0L
+    // 맨 앞 앱을 확인하는 간격(ms)
+    private val pollMs = 500L
 
     private val system = setOf(
         "com.android.systemui", "android",
         "com.google.android.permissioncontroller", "com.android.permissioncontroller"
     )
 
-    private val screenOff = object : BroadcastReceiver() {
+    private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, i: Intent?) {
-            unlockedPkg = null
-            lastActive.clear()
-            val p = currentPkg
-            if (p != null && p in lockedSet()) show(p)
+            when (i?.action) {
+                Intent.ACTION_SCREEN_OFF -> { unlockedPkg = null; lastActive.clear() }
+                else -> reconcile()
+            }
+        }
+    }
+
+    private val poll = object : Runnable {
+        override fun run() {
+            try {
+                val pm = svc.getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (pm.isInteractive && (lockedSet().isNotEmpty() || overlay != null)) reconcile()
+            } catch (_: Exception) {}
+            h.postDelayed(this, pollMs)
         }
     }
 
     init {
-        svc.registerReceiver(screenOff, IntentFilter(Intent.ACTION_SCREEN_OFF))
+        val f = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        svc.registerReceiver(receiver, f)
+        h.postDelayed(poll, pollMs)
     }
 
     fun destroy() {
-        try { svc.unregisterReceiver(screenOff) } catch (_: Exception) {}
+        h.removeCallbacks(poll)
+        try { svc.unregisterReceiver(receiver) } catch (_: Exception) {}
         hide()
     }
 
@@ -59,29 +83,59 @@ class AppLockGuard(private val svc: AccessibilityService) {
         return p.getStringSet("al_pkgs", emptySet()) ?: emptySet()
     }
 
-    private fun ignored(pkg: String): Boolean {
-        if (pkg == svc.packageName || pkg in system) return true
+    private fun isSystem(pkg: String): Boolean {
+        if (pkg in system) return true
         return try {
             val imm = svc.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
             imm.enabledInputMethodList.any { it.packageName == pkg }
         } catch (_: Exception) { false }
     }
 
+    /** 지금 실제로 맨 앞(활성)인 창의 앱 이름. 앱 이름만 확인하고 화면 내용은 읽지 않음 */
+    private fun activePkg(): String? {
+        return try {
+            val n = svc.rootInActiveWindow ?: return null
+            val p = n.packageName?.toString()
+            @Suppress("DEPRECATION") n.recycle()
+            p
+        } catch (_: Exception) { null }
+    }
+
+    /** 창 상태 변경 이벤트 */
     fun onEvent(raw: CharSequence?) {
         val pkg = raw?.toString() ?: return
-        if (pkg.isEmpty() || ignored(pkg)) return
+        if (pkg.isEmpty() || pkg == svc.packageName || isSystem(pkg)) return
+        decide(pkg, false)
+    }
+
+    /** 실제 맨 앞 앱을 확인해서 상태를 맞춤 */
+    fun reconcile() {
+        val pkg = activePkg() ?: return
+        if (pkg.isEmpty() || isSystem(pkg)) return
+        decide(pkg, true)
+    }
+
+    private fun decide(pkg: String, fromActive: Boolean) {
         val now = SystemClock.uptimeMillis()
-        currentPkg = pkg
+        val set = lockedSet()
+
+        if (pkg !in set) {
+            // 이벤트로만 들어온 경우: 잠긴 앱이 아직 맨 앞이면 팝업 등 잡음이므로 무시
+            if (!fromActive) {
+                val act = activePkg()
+                if (act != null && !isSystem(act) && act in set) return
+            }
+            val prev = unlockedPkg
+            if (prev != null) { lastActive[prev] = now; unlockedPkg = null }
+            hide()
+            return
+        }
 
         val prev = unlockedPkg
-        if (prev != null && prev != pkg) {
-            lastActive[prev] = now
-            unlockedPkg = null
-        }
-        if (pkg !in lockedSet()) { hide(); return }
+        if (prev != null && prev != pkg) { lastActive[prev] = now; unlockedPkg = null }
         if (unlockedPkg == pkg) return
-        if (overlayPkg == pkg) return
-        if (now - (lastActive[pkg] ?: 0L) < grace) { unlockedPkg = pkg; return }
+        if (overlayPkg == pkg && overlay?.isAttachedToWindow == true) return
+        if (grace > 0 && now - (lastActive[pkg] ?: 0L) < grace) { unlockedPkg = pkg; return }
         show(pkg)
     }
 
