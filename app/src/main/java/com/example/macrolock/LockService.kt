@@ -1,5 +1,6 @@
 package com.example.macrolock
 
+import android.accessibilityservice.AccessibilityService
 import android.app.*
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -66,6 +67,17 @@ class LockService : Service() {
     private var lockStage = -1
     private val STAGE_MS = 2L * 60 * 60 * 1000      // 2시간마다 배경 변경
     private val SCRIM = 0x73000000                    // 사진 어둡게 (값이 작을수록 밝아짐)
+
+    // 비상 해제
+    private val EMERGENCY_TAPS = 10                   // 몇 번 터치하면 비상 해제할지
+    private val EMERGENCY_SECONDS = 60                // 비상 해제 유지 시간(초)
+    private var eTaps = 0
+    private var eLast = 0L
+    private var emergencyView: View? = null
+    private var emergencyTv: TextView? = null
+    private var emergencyPass = false
+    private var emergencyStart = 0L
+    private var emergencyLeft = 0
 
     private val NF = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
     private val NL = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -522,10 +534,21 @@ class LockService : Service() {
         if (picking) togglePick()
         closeAi()
         if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {}; rootShown = false }
-        showLock(pass)
+        showLock(pass, 0L)
     }
 
-    private fun showLock(pass: Boolean) {
+    /** 잠금 화면 위에서 빠르게 N번 터치하면 비상 해제 */
+    private fun countEmergencyTap() {
+        val now = SystemClock.uptimeMillis()
+        eTaps = if (now - eLast < 1500) eTaps + 1 else 1
+        eLast = now
+        if (eTaps >= EMERGENCY_TAPS) {
+            eTaps = 0
+            h.post { emergency() }
+        }
+    }
+
+    private fun showLock(pass: Boolean, keepStart: Long) {
         val svc = ClickService.instance
         val mgr = if (svc != null) svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager else wm
         val type = if (svc != null) WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
@@ -551,7 +574,10 @@ class LockService : Service() {
         }
         bg.addView(tv, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             .apply { topMargin = dp(48) })
-        if (!pass) bg.setOnTouchListener { _, _ -> true }
+        if (!pass) bg.setOnTouchListener { _, e ->
+            if (e.action == MotionEvent.ACTION_DOWN) countEmergencyTap()
+            true
+        }
 
         val bgLp = WindowManager.LayoutParams(
             MATCH, MATCH, type,
@@ -568,7 +594,7 @@ class LockService : Service() {
         lockBgLp = bgLp
         lockImg = iv
         lockTimerTv = tv
-        lockStartMs = SystemClock.elapsedRealtime()
+        lockStartMs = if (keepStart > 0L) keepStart else SystemClock.elapsedRealtime()
         lockStage = -1
         h.post(lockTick)
 
@@ -577,6 +603,7 @@ class LockService : Service() {
             setTextColor(Color.WHITE); alpha = 0.35f
             setPadding(dp(16), dp(16), dp(16), dp(16))
             setOnClickListener {
+                countEmergencyTap()
                 val now = SystemClock.uptimeMillis()
                 taps = if (now - lastTap < 2000) taps + 1 else 1
                 lastTap = now
@@ -656,11 +683,68 @@ class LockService : Service() {
         }
     }
 
+    // ---------- 비상 해제 ----------
+    private val emergencyTick = object : Runnable {
+        override fun run() {
+            if (emergencyView == null) return
+            if (emergencyLeft <= 0) { endEmergency(true); return }
+            emergencyTv?.text =
+                "🔓 비상 해제 중 · ${emergencyLeft}초 뒤 다시 잠깁니다\n전원 메뉴에서 '다시 시작'을 누르세요"
+            emergencyLeft--
+            h.postDelayed(this, 1000)
+        }
+    }
+
+    private fun emergency() {
+        if (lockBg == null || emergencyView != null) return
+        emergencyPass = lockPass
+        emergencyStart = lockStartMs
+        removeLockViews()
+        ClickService.instance?.performGlobalAction(AccessibilityService.GLOBAL_ACTION_POWER_DIALOG)
+        showEmergencyBanner()
+    }
+
+    private fun showEmergencyBanner() {
+        emergencyLeft = EMERGENCY_SECONDS
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                setColor(0xF20B1220.toInt()); cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), 0xFFE8B84A.toInt())
+            }
+        }
+        val tv = TextView(this).apply {
+            setTextColor(Color.WHITE); textSize = 15f; gravity = Gravity.CENTER
+        }
+        emergencyTv = tv
+        box.addView(tv)
+        box.addView(row2(btn("다시 잠금") { endEmergency(true) }, btn("잠금 끝내기") { endEmergency(false) }))
+        val w = minOf(dp(340), screenSize().first - dp(24))
+        val lp = wlp(w, WRAP, NF or NL).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = statusBarH() + dp(8)
+        }
+        try { wm.addView(box, lp) } catch (_: Exception) {}
+        emergencyView = box
+        h.post(emergencyTick)
+    }
+
+    private fun endEmergency(relock: Boolean) {
+        h.removeCallbacks(emergencyTick)
+        emergencyView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        emergencyView = null
+        emergencyTv = null
+        if (relock) showLock(emergencyPass, emergencyStart) else unlock()
+    }
+
     override fun onDestroy() {
         alive = false
         clicking = false
         h.removeCallbacksAndMessages(null)
         marker?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        emergencyView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        emergencyView = null
         closeAi()
         removeLockViews()
         if (rootShown) { try { wm.removeView(root) } catch (_: Exception) {} }
