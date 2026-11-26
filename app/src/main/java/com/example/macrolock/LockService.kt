@@ -574,6 +574,9 @@ class LockService : Service() {
         }
         bg.addView(tv, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             .apply { topMargin = dp(48) })
+                bg.addView(InfoText(this, 40f).apply { alpha = 0.6f },
+            FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
+                .apply { topMargin = dp(120) })
         if (!pass) bg.setOnTouchListener { _, e ->
             if (e.action == MotionEvent.ACTION_DOWN) countEmergencyTap()
             true
