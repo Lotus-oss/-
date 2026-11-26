@@ -636,6 +636,7 @@ class LockService : Service() {
             text = label; textSize = 20f; setOnClickListener { a() }
             layoutParams = LinearLayout.LayoutParams(0, dp(60), 1f)
         }
+                pad.addView(InfoText(this, 18f), LinearLayout.LayoutParams(MATCH, WRAP))
         pad.addView(disp)
         val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"),
             listOf("7", "8", "9"), listOf("지움", "0", "확인"))
