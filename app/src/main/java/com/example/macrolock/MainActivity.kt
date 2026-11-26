@@ -224,6 +224,42 @@ class MainActivity : Activity() {
             body.addView(c)
         }
 
+                // 날씨 도시
+        card().also { c ->
+            val city = sp.getString("wname", "") ?: ""
+            c.addView(label("날씨 도시: " + if (city.isNotBlank()) "$city ✅" else "미설정 ❌"))
+            val cityInput = field("도시 이름 (예: 서울)", InputType.TYPE_CLASS_TEXT)
+            c.addView(cityInput)
+            c.addView(btn("도시 저장") {
+                val nm = cityInput.text.toString().trim()
+                if (nm.isEmpty()) toast("도시 이름을 입력하세요")
+                else {
+                    toast("찾는 중...")
+                    Weather.setCity(this, nm) { ok ->
+                        runOnUiThread { toast(if (ok) "저장됨" else "도시를 찾지 못했습니다"); build() }
+                    }
+                }
+            })
+            c.addView(label("날씨 데이터: Open-Meteo.com").apply { textSize = 12f })
+            body.addView(c)
+        }
+
+        // 카톡 보관함
+        card().also { c ->
+            val on = (Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: "")
+                .contains(packageName)
+            c.addView(label("카톡 메시지 저장(알림 접근): " + if (on) "켜짐 ✅" else "꺼짐 ❌"))
+            if (!on) {
+                c.addView(label("※ 안 켜지면: 설정 → 앱 → 이 앱 → 오른쪽 위 ⋮ → '제한된 설정 허용' 후 다시 시도"))
+                c.addView(btn("알림 접근 설정 열기") {
+                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                })
+            }
+            c.addView(btn("💬 카톡 보관함 열기 (${KakaoDb.get(this).count()}개)") {
+                startActivity(Intent(this, KakaoActivity::class.java))
+            })
+            body.addView(c)
+        }
         // 6. 패널
         card().also { c ->
             c.addView(label("6. 화면에 아이콘 띄우기\n아이콘을 누르면 AI 검색·풀이, 클릭 위치 지정, 잠금을 할 수 있습니다."))
