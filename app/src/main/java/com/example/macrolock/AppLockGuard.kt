@@ -183,6 +183,8 @@ class AppLockGuard(private val svc: AccessibilityService) {
         }
 
         box.addView(title)
+                box.addView(InfoText(svc, 18f), LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         box.addView(disp)
         val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"),
             listOf("7", "8", "9"), listOf("지움", "0", "확인"))
