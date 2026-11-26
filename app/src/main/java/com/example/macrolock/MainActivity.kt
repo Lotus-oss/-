@@ -6,6 +6,7 @@ import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -14,6 +15,8 @@ import android.graphics.PorterDuff
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.location.Location
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -50,12 +53,63 @@ class MainActivity : Activity() {
 
     override fun onResume() { super.onResume(); build() }
 
+    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
+        super.onRequestPermissionsResult(code, perms, res)
+        if (code == 77 && res.any { it == PackageManager.PERMISSION_GRANTED }) useGps()
+    }
+
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    private fun showMsg(msg: String) {
+        AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+            .setMessage(msg)
+            .setPositiveButton("확인", null)
+            .show()
+    }
 
     private fun decodeRes(id: Int): Bitmap? = try {
         BitmapFactory.decodeResource(resources, id, BitmapFactory.Options().apply { inScaled = false })
     } catch (_: Throwable) { null }
 
+    // ---------- GPS ----------
+    private fun applyLoc(l: Location) {
+        Weather.setByCoords(this, l.latitude, l.longitude) { res ->
+            runOnUiThread { toast(if (res != null) "위치 저장됨" else "실패"); build() }
+        }
+    }
+
+    private fun useGps() {
+        val fine = Manifest.permission.ACCESS_FINE_LOCATION
+        val coarse = Manifest.permission.ACCESS_COARSE_LOCATION
+        if (checkSelfPermission(fine) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(coarse) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(fine, coarse), 77)
+            return
+        }
+        toast("위치 확인 중...")
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        var best: Location? = null
+        try {
+            for (prov in lm.getProviders(true)) {
+                val l = lm.getLastKnownLocation(prov)
+                val cur = best
+                if (l != null && (cur == null || l.time > cur.time)) best = l
+            }
+        } catch (_: SecurityException) {}
+        val loc = best
+        if (loc != null) { applyLoc(loc); return }
+        if (Build.VERSION.SDK_INT >= 30) {
+            val prov = if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
+                LocationManager.NETWORK_PROVIDER else LocationManager.GPS_PROVIDER
+            try {
+                lm.getCurrentLocation(prov, null, mainExecutor) { l ->
+                    if (l != null) applyLoc(l) else toast("위치를 가져오지 못했습니다. 위치를 켜고 다시 시도하세요")
+                }
+            } catch (_: SecurityException) {}
+        } else toast("위치를 가져오지 못했습니다. 위치를 켜고 다시 시도하세요")
+    }
+
+    // ---------- 앱 선택 ----------
     private fun pickApps(sp: SharedPreferences) {
         val pm = packageManager
         val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -224,23 +278,47 @@ class MainActivity : Activity() {
             body.addView(c)
         }
 
-                // 날씨 도시
+        // 날씨: 위치 · 기상청 · 시간별 예보
         card().also { c ->
-            val city = sp.getString("wname", "") ?: ""
-            c.addView(label("날씨 도시: " + if (city.isNotBlank()) "$city ✅" else "미설정 ❌"))
-            val cityInput = field("도시 이름 (예: 서울)", InputType.TYPE_CLASS_TEXT)
-            c.addView(cityInput)
-            c.addView(btn("도시 저장") {
-                val nm = cityInput.text.toString().trim()
-                if (nm.isEmpty()) toast("도시 이름을 입력하세요")
+            val full = sp.getString("wfull", "") ?: ""
+            c.addView(label("🌤 날씨 위치: " + if (full.isNotBlank()) "✅\n$full" else "미설정 ❌"))
+            val placeInput = field("동네·주소 (예: 서울 강남구 역삼동)", InputType.TYPE_CLASS_TEXT)
+            c.addView(placeInput)
+            c.addView(btn("주소로 위치 설정") {
+                val q = placeInput.text.toString().trim()
+                if (q.isEmpty()) toast("동네나 주소를 입력하세요")
                 else {
                     toast("찾는 중...")
-                    Weather.setCity(this, nm) { ok ->
-                        runOnUiThread { toast(if (ok) "저장됨" else "도시를 찾지 못했습니다"); build() }
+                    Weather.setPlace(this, q) { res ->
+                        runOnUiThread {
+                            toast(if (res != null) "위치 저장됨" else "찾지 못했습니다. 시/구/동을 함께 적어보세요")
+                            build()
+                        }
                     }
                 }
             })
-            c.addView(label("날씨 데이터: Open-Meteo.com").apply { textSize = 12f })
+            c.addView(btn("📍 내 위치로 설정 (GPS)") { useGps() })
+
+            c.addView(label("기상청 인증키: " +
+                if (Weather.hasKey(this)) "저장됨 ✅ (기상청 데이터)" else "없음 (Open-Meteo 사용)"))
+            val kmaKey = field("공공데이터포털 인증키 (비우고 저장하면 삭제)",
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+            c.addView(kmaKey)
+            c.addView(btn("인증키 저장") {
+                Weather.saveKey(this, kmaKey.text.toString())
+                toast(if (kmaKey.text.isNullOrBlank()) "삭제됨" else "저장됨")
+                build()
+            })
+            c.addView(btn("연결 테스트") {
+                toast("테스트 중...")
+                Weather.test(this) { msg -> runOnUiThread { showMsg(msg) } }
+            })
+
+            c.addView(HourlyView(this).apply {
+                background = GradientDrawable().apply { setColor(0x33FFFFFF); cornerRadius = d(14).toFloat() }
+                layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = d(10) }
+            })
+            c.addView(label("날씨 데이터: 기상청 / Open-Meteo.com · 주소 검색: © OpenStreetMap").apply { textSize = 11f })
             body.addView(c)
         }
 
@@ -260,6 +338,7 @@ class MainActivity : Activity() {
             })
             body.addView(c)
         }
+
         // 6. 패널
         card().also { c ->
             c.addView(label("6. 화면에 아이콘 띄우기\n아이콘을 누르면 AI 검색·풀이, 클릭 위치 지정, 잠금을 할 수 있습니다."))
