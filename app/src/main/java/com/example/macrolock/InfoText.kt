@@ -11,8 +11,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** 시계 + 날짜 + 날씨. 화면에 붙어 있을 때만 갱신됩니다 */
-class InfoText(ctx: Context, size: Float = 28f) : TextView(ctx) {
+/** 시계 + 날짜 + 날씨. oneLine=true면 한 줄로 표시 */
+class InfoText(ctx: Context, size: Float = 28f, private val oneLine: Boolean = false) : TextView(ctx) {
     private val hd = Handler(Looper.getMainLooper())
     private var weather = ""
     private val tf = SimpleDateFormat("a h:mm", Locale.KOREA)
@@ -21,15 +21,16 @@ class InfoText(ctx: Context, size: Float = 28f) : TextView(ctx) {
     private val tick = object : Runnable {
         override fun run() {
             val now = Date()
-            text = tf.format(now) + "\n" + df.format(now) +
-                (if (weather.isNotEmpty()) "\n$weather" else "")
+            val sep = if (oneLine) " · " else "\n"
+            text = tf.format(now) + sep + df.format(now) +
+                (if (weather.isNotEmpty()) sep + weather else "")
             hd.postDelayed(this, 1000)
         }
     }
 
     private val wk = object : Runnable {
         override fun run() {
-            Weather.get(context) { w -> hd.post { weather = w } }
+            Weather.get(context) { r -> hd.post { weather = r?.current ?: "" } }
             hd.postDelayed(this, 10 * 60_000L)
         }
     }
