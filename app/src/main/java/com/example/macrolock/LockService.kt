@@ -574,9 +574,23 @@ class LockService : Service() {
         }
         bg.addView(tv, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
             .apply { topMargin = dp(48) })
-                bg.addView(InfoText(this, 40f).apply { alpha = 0.6f },
-            FrameLayout.LayoutParams(WRAP, WRAP, Gravity.TOP or Gravity.CENTER_HORIZONTAL)
-                .apply { topMargin = dp(120) })
+
+        // 시계 + 날씨 + 시간별 예보
+        val land = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val infoBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            alpha = 0.9f
+        }
+        infoBox.addView(InfoText(this, if (land) 18f else 36f, land))
+        infoBox.addView(HourlyView(this).apply {
+            background = GradientDrawable().apply {
+                setColor(0x66000000); cornerRadius = dp(16).toFloat()
+            }
+        }, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(8) })
+        bg.addView(infoBox, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.TOP)
+            .apply { topMargin = dp(110); leftMargin = dp(12); rightMargin = dp(12) })
+
         if (!pass) bg.setOnTouchListener { _, e ->
             if (e.action == MotionEvent.ACTION_DOWN) countEmergencyTap()
             true
@@ -636,7 +650,9 @@ class LockService : Service() {
             text = label; textSize = 20f; setOnClickListener { a() }
             layoutParams = LinearLayout.LayoutParams(0, dp(60), 1f)
         }
-                pad.addView(InfoText(this, 18f), LinearLayout.LayoutParams(MATCH, WRAP))
+        pad.addView(InfoText(this, 18f), LinearLayout.LayoutParams(MATCH, WRAP))
+        if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT)
+            pad.addView(HourlyView(this, true), LinearLayout.LayoutParams(MATCH, WRAP))
         pad.addView(disp)
         val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"),
             listOf("7", "8", "9"), listOf("지움", "0", "확인"))
