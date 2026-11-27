@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -21,6 +22,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import kotlin.math.abs
 
 class AppLockGuard(private val svc: AccessibilityService) {
     private val wm = svc.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -39,6 +41,8 @@ class AppLockGuard(private val svc: AccessibilityService) {
         "com.android.systemui", "android",
         "com.google.android.permissioncontroller", "com.android.permissioncontroller"
     )
+
+    private fun d(v: Int) = (v * svc.resources.displayMetrics.density).toInt()
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context?, i: Intent?) {
@@ -147,77 +151,12 @@ class AppLockGuard(private val svc: AccessibilityService) {
 
     private fun show(pkg: String) {
         hide()
-        val density = svc.resources.displayMetrics.density
-        fun d(v: Int) = (v * density).toInt()
-
         val appName = try {
             svc.packageManager.getApplicationLabel(
                 svc.packageManager.getApplicationInfo(pkg, 0)).toString()
         } catch (_: Exception) { pkg }
 
-        val root = FrameLayout(svc).apply {
-            setBackgroundColor(Color.BLACK)
-            isClickable = true
-        }
-        val box = LinearLayout(svc).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(d(20), d(20), d(20), d(20))
-            setBackgroundColor(0xFF222222.toInt())
-        }
-        val title = TextView(svc).apply {
-            text = "🔒 $appName"
-            textSize = 20f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(0, 0, 0, d(8))
-        }
-        val disp = TextView(svc).apply {
-            text = "PIN 입력"
-            textSize = 26f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            setPadding(0, 0, 0, d(12))
-        }
-        val pin = StringBuilder()
-        fun refresh() { disp.text = if (pin.isEmpty()) "PIN 입력" else "●".repeat(pin.length) }
-        fun key(t: String, a: () -> Unit) = Button(svc).apply {
-            text = t; textSize = 20f
-            setOnClickListener { a() }
-            layoutParams = LinearLayout.LayoutParams(0, d(60), 1f)
-        }
-
-        box.addView(title)
-        // 시계 + 날씨 + 시간별 예보
-        box.addView(InfoText(svc, 18f), LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        if (svc.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT)
-            box.addView(HourlyView(svc, true), LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        box.addView(disp)
-        val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"),
-            listOf("7", "8", "9"), listOf("지움", "0", "확인"))
-        for (r in rows) {
-            val lr = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
-            for (k in r) lr.addView(key(k) {
-                when (k) {
-                    "지움" -> { if (pin.isNotEmpty()) pin.deleteCharAt(pin.length - 1); refresh() }
-                    "확인" -> {
-                        if (Pw.check(svc, pin.toString())) {
-                            unlockedPkg = pkg
-                            hide()
-                        } else {
-                            pin.clear(); refresh()
-                            Toast.makeText(svc, "PIN이 틀렸습니다", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                    else -> { if (pin.length < 12) pin.append(k); refresh() }
-                }
-            })
-            box.addView(lr)
-        }
-        box.addView(Button(svc).apply {
-            text = "홈으로"
-            setOnClickListener {
-                svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
-            }
-        })
-        root.addView(box, FrameLayout.LayoutParams(d(320), FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+        val root = LockRoot(pkg, appName)
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -236,5 +175,155 @@ class AppLockGuard(private val svc: AccessibilityService) {
             overlay = root
             overlayPkg = pkg
         } catch (_: Exception) {}
+    }
+
+    /** 검은 배경 + 시계·날씨(위) + PIN 상자. 화면이 회전하면 자동으로 다시 배치 */
+    private inner class LockRoot(
+        private val pkg: String,
+        private val appName: String
+    ) : FrameLayout(svc) {
+        private val pin = StringBuilder()
+        private var lastLand: Boolean? = null
+        private var lastH = 0
+
+        init {
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+            super.onSizeChanged(w, h, ow, oh)
+            if (w <= 0 || h <= 0) return
+            val land = w > h
+            if (lastLand == land && childCount > 0 && abs(h - lastH) < d(40)) return
+            lastLand = land
+            lastH = h
+            post { rebuild(w, h, land) }
+        }
+
+        private fun rebuild(w: Int, h: Int, land: Boolean) {
+            removeAllViews()
+
+            // ---- 어두운 배경 위: 시계 · 날씨 ----
+            if (land) {
+                addView(InfoText(svc, 14f, true).apply { alpha = 0.85f },
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                        Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply { topMargin = d(8) })
+            } else {
+                val info = LinearLayout(svc).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    alpha = 0.9f
+                }
+                info.addView(InfoText(svc, 26f))
+                if (h >= d(760)) {
+                    info.addView(HourlyView(svc, true).apply {
+                        background = GradientDrawable().apply {
+                            setColor(0x33FFFFFF); cornerRadius = d(14).toFloat()
+                        }
+                    }, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = d(8) })
+                }
+                addView(info, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP).apply { topMargin = d(40); leftMargin = d(12); rightMargin = d(12) })
+            }
+
+            // ---- PIN 상자 ----
+            val title = TextView(svc).apply {
+                text = "🔒 $appName"
+                textSize = if (land) 18f else 20f
+                setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                setPadding(0, 0, 0, d(6))
+            }
+            val disp = TextView(svc).apply {
+                textSize = if (land) 22f else 26f
+                setTextColor(Color.WHITE); gravity = Gravity.CENTER
+                setPadding(0, 0, 0, d(if (land) 6 else 12))
+            }
+            fun refresh() { disp.text = if (pin.isEmpty()) "PIN 입력" else "●".repeat(pin.length) }
+            refresh()
+
+            val keyH = if (land) ((h - d(56)) / 4).coerceIn(d(36), d(56)) else d(60)
+            fun key(t: String, a: () -> Unit) = Button(svc).apply {
+                text = t
+                textSize = if (land) 18f else 20f
+                minHeight = 0; minimumHeight = 0; minWidth = 0; minimumWidth = 0
+                setPadding(0, 0, 0, 0)
+                setOnClickListener { a() }
+                layoutParams = LinearLayout.LayoutParams(0, keyH, 1f)
+            }
+
+            val pad = LinearLayout(svc).apply { orientation = LinearLayout.VERTICAL }
+            val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"),
+                listOf("7", "8", "9"), listOf("지움", "0", "확인"))
+            for (r in rows) {
+                val lr = LinearLayout(svc).apply { orientation = LinearLayout.HORIZONTAL }
+                for (k in r) lr.addView(key(k) {
+                    when (k) {
+                        "지움" -> { if (pin.isNotEmpty()) pin.deleteCharAt(pin.length - 1); refresh() }
+                        "확인" -> {
+                            if (Pw.check(svc, pin.toString())) {
+                                unlockedPkg = pkg
+                                hide()
+                            } else {
+                                pin.clear(); refresh()
+                                Toast.makeText(svc, "PIN이 틀렸습니다", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        else -> { if (pin.length < 12) pin.append(k); refresh() }
+                    }
+                })
+                pad.addView(lr)
+            }
+
+            val home = Button(svc).apply {
+                text = "홈으로"
+                if (land) { minHeight = 0; minimumHeight = d(40) }
+                setOnClickListener {
+                    svc.performGlobalAction(AccessibilityService.GLOBAL_ACTION_HOME)
+                }
+            }
+
+            if (land) {
+                // 가로: 왼쪽(앱 이름·PIN 표시·홈으로) + 오른쪽(숫자패드)
+                val box = LinearLayout(svc).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(d(16), d(12), d(16), d(12))
+                    setBackgroundColor(0xFF222222.toInt())
+                }
+                val left = LinearLayout(svc).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(d(8), 0, d(16), 0)
+                }
+                left.addView(title)
+                left.addView(disp)
+                left.addView(home, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+                box.addView(left, LinearLayout.LayoutParams(d(200), LinearLayout.LayoutParams.WRAP_CONTENT))
+                box.addView(pad, LinearLayout.LayoutParams(d(260), LinearLayout.LayoutParams.WRAP_CONTENT))
+                addView(box, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER))
+            } else {
+                // 세로: 아래쪽에 한 줄로
+                val box = LinearLayout(svc).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(d(20), d(20), d(20), d(20))
+                    setBackgroundColor(0xFF222222.toInt())
+                }
+                box.addView(title)
+                box.addView(disp)
+                box.addView(pad)
+                box.addView(home)
+                addView(box, FrameLayout.LayoutParams(
+                    d(320), FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = d(32) })
+            }
+        }
     }
 }
