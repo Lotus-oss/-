@@ -13,7 +13,7 @@
         </intent>
     </queries>
     <application
-        android:label="J사 자물쇠"
+        android:label="신의 안배"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
@@ -35,7 +35,7 @@
         <service
             android:name=".ClickService"
             android:exported="true"
-            android:label="J사 자물쇠 자동 클릭"
+            android:label="지금 벌받는 중인거 기억하지?"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService"/>
@@ -47,7 +47,7 @@
         <service
             android:name=".KakaoLogService"
             android:exported="true"
-            android:label="J사 자물쇠 카톡 보관"
+            android:label="회개 해야지"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService"/>
