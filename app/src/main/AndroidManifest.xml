@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN"/>
@@ -11,7 +13,7 @@
         </intent>
     </queries>
     <application
-        android:label="신의 안배"
+        android:label="J사 자물쇠"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
@@ -33,7 +35,7 @@
         <service
             android:name=".ClickService"
             android:exported="true"
-            android:label="신의 안배.. 뭐 그런거야"
+            android:label="J사 자물쇠 자동 클릭"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService"/>
@@ -45,7 +47,7 @@
         <service
             android:name=".KakaoLogService"
             android:exported="true"
-            android:label="회개 해야지?"
+            android:label="J사 자물쇠 카톡 보관"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService"/>
